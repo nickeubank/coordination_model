@@ -13,10 +13,11 @@ g = ig.Graph()
 g.add_vertices(4)
 g.add_edges([(0,1), (1,2), (2,0)])
 
-cm.run_coordination_simulation(g, debug=True)
+#a = cm.run_coordination_simulation(g, num_runs = 5, debug=True)
+#print(a)
 
 # Bigger random 
 g2 = ig.Graph.Erdos_Renyi(n=20, p=0.1)
-#cm.run_coordination_simulation(g2, debug=True)
-
+a = cm.run_coordination_simulation(g2, num_runs=5, debug=True)
+print(a)
 #cm.test_suite()

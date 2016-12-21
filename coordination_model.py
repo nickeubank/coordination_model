@@ -15,8 +15,8 @@ except:
     raise EnvironmentError("Not guaranteed to work with less than python 3.4")
 
 
-def run_coordination_simulation(graph, num_runs = 1, num_steps=4, 
-                                beta_mean = 0.5, beta_std = 0.1,
+def run_coordination_simulation(graph, num_runs=1, num_steps=4, 
+                                beta_mean=0.5, beta_std=0.1,
                                 debug=False, np_seed=None, 
                                 running_test_suite=False):
     """ 
@@ -59,7 +59,8 @@ def run_coordination_simulation(graph, num_runs = 1, num_steps=4,
     results = pd.Series(index=range(num_runs))
 
     for run in range(num_runs):
-        print('starting run {}'.format(run))
+        if not running_test_suite:
+            print('starting run {}'.format(run))
 
         results[run] = single_simulation_run(graph, num_steps, beta_mean, 
                                              beta_std, debug, np_seed)
@@ -101,28 +102,7 @@ class Simulation_State(object):
         self.status['binary_pref'] = (self.status.beta > 0.5)
 
         if self.debug:
-
-            color_dict = {0:'blue', 1:'red'}
-
-            for v in self.graph.vs:
-                new_pref = self.status.binary_pref.loc[v.index]
-                v['color'] = color_dict[new_pref]
-
-            debug_folder = '/users/nick/dropbox/GAPP/02_Main Evaluation/Activities' \
-                         '/18_voting_and_networks/2_code/coordination_model_folder' \
-                         '/debug_plots'
-
-            os.chdir(debug_folder)
-
-            for f in os.listdir("."):
-                os.remove(f)
-
-            random.seed('plotseed')
-            ig.plot(self.graph, target='plot_initial.png')
-
-            # Don't want affecting anything outside of here, so reset all
-            random.seed(None)
-
+            self.plot_graph(initial=True)
   
     def iterate(self, step):
         """ 
@@ -132,27 +112,7 @@ class Simulation_State(object):
         self.status['binary_pref'] = ((self.status.beta + self.status.local_avg)/2) > 0.5
 
         if self.debug:
-
-            color_dict = {0:'blue', 1:'red'}
-
-            for v in self.graph.vs:
-                new_pref = self.status.binary_pref.loc[v.index]
-                v['color'] = color_dict[new_pref]
-
-            debug_folder = '/users/nick/dropbox/GAPP/02_Main Evaluation/Activities' \
-                         '/18_voting_and_networks/2_code/coordination_model_folder' \
-                         '/debug_plots'
-
-            os.chdir(debug_folder)
-
-
-            random.seed('plotseed')
-            ig.plot(self.graph, target='plot_{}.png'.format(step))
-
-            # Don't want affecting anything outside of here, so reset all
-            random.seed(None)
-
-
+            self.plot_graph(step)
 
     def update_local_avg(self):
         # For each vertex, look up neighbors. 
@@ -173,6 +133,32 @@ class Simulation_State(object):
 
         assert (self.status.local_avg >= 0).all() 
         assert (self.status.local_avg <= 1).all() 
+
+    def plot_graph(self, step='', initial=False, ):
+            color_dict = {0:'blue', 1:'red'}
+
+            for v in self.graph.vs:
+                new_pref = self.status.binary_pref.loc[v.index]
+                v['color'] = color_dict[new_pref]
+                v['label'] = 'beta {:.2f},\n local {:.2f}'.format(self.status.beta.loc[v.index], self.status.local_avg.loc[v.index])
+        
+            debug_folder = '/users/nick/dropbox/GAPP/02_Main Evaluation/Activities' \
+                         '/18_voting_and_networks/2_code/coordination_model_folder' \
+                         '/debug_plots'
+
+            os.chdir(debug_folder)
+
+            if initial:
+                for f in os.listdir("."):
+                    if f.endswith(".png"):
+                        os.remove(f)
+
+            random.seed('plotseed')
+            ig.plot(self.graph, target='plot_{}.png'.format(step), vertex_label_dist=2, margin=70)
+
+            # Don't want affecting anything outside of here, so reset all
+            random.seed(None)
+
 
 
 def test_suite():

@@ -196,9 +196,11 @@ def test_suite():
     assert (results == results[0]).all()
 
     # Graph with two people should never converge if betas in 0-0.5 and 0.5-1. 
-    # Should work with these values (but test too!)
-    g = ig.Graph([0,1])
     
+    g = ig.Graph([(0,1)])
+    
+    # Make sure seed generates proper betas. Could vary by operating system? 
+    # (I'm on mac)
     npr.seed(1)
     test = npr.normal(0.5, 0.2, 2)
     assert test[0] > 0 and test[0] < 1

@@ -3,4 +3,5 @@ __pycache__
 __pycache__/*
 *png
 *.ipynb
+tester_code.py
 

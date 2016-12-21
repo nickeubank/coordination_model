@@ -18,7 +18,8 @@ g.add_edges([(0,1), (1,2), (2,0)])
 
 # Bigger random 
 g2 = ig.Graph.Erdos_Renyi(n=20, p=0.1)
-a = cm.run_coordination_simulation(g2, num_runs=5, debug=True)
+a = cm.run_coordination_simulation(g2, num_runs=4, num_steps = 5, debug=False)
+
 print(a)
 #cm.test_suite()
 

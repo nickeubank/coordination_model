@@ -21,3 +21,4 @@ g2 = ig.Graph.Erdos_Renyi(n=20, p=0.1)
 a = cm.run_coordination_simulation(g2, num_runs=5, debug=True)
 print(a)
 #cm.test_suite()
+

@@ -115,8 +115,14 @@ class Simulation_State(object):
             self.plot_graph(step)
 
     def update_local_avg(self):
-        # For each vertex, look up neighbors. 
 
+        new_local_avg = pd.Series(index=range(self.vcount), dtype='float')
+
+        # I'm gonna use location indices not names (faster) so want to make sure works. 
+        # iGraph uses sequential vertex numbers as ids, so should match. 
+        assert (self.status.index == range(self.vcount)).all()
+
+        # For each vertex, look up neighbors. 
         for v in self.graph.vs:
             neighbor_indices = list()
             for n in v.neighbors():
@@ -125,7 +131,9 @@ class Simulation_State(object):
             # Sends warning if empty slice, but ok. 
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                self.status.loc[v.index, 'local_avg'] = self.status.loc[neighbor_indices, 'binary_pref'].mean()
+                new_local_avg.iloc[v.index] = self.status.binary_pref.iloc[neighbor_indices].mean()
+
+        self.status.local_avg = new_local_avg
 
         # People with no neighbors get 0.5
         self.status.local_avg = self.status.local_avg.fillna(0.5)
@@ -134,7 +142,7 @@ class Simulation_State(object):
         assert (self.status.local_avg >= 0).all() 
         assert (self.status.local_avg <= 1).all() 
 
-    def plot_graph(self, step='', initial=False, ):
+    def plot_graph(self, step='', initial=False):
             color_dict = {0:'blue', 1:'red'}
 
             for v in self.graph.vs:
@@ -187,6 +195,20 @@ def test_suite():
                                           running_test_suite=True) 
     assert (results == results[0]).all()
 
+    # Graph with two people should never converge if betas in 0-0.5 and 0.5-1. 
+    # Should work with these values (but test too!)
+    g = ig.Graph([0,1])
+    
+    npr.seed(1)
+    test = npr.normal(0.5, 0.2, 2)
+    assert test[0] > 0 and test[0] < 1
+    assert test[1] > 0 and test[1] < 1
+    
+    results = run_coordination_simulation(g, num_runs = 10, num_steps=5, 
+                                          beta_mean=0.5, beta_std=0.2,
+                                          np_seed=1,
+                                          running_test_suite=True) 
+    assert (results == 0.5).all()
 
 
 

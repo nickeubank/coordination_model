@@ -17,8 +17,7 @@ except:
 
 def run_coordination_simulation(graph, num_runs=1, num_steps=4, 
                                 beta_mean=0.5, beta_std=0.1,
-                                debug=False, np_seed=None, 
-                                running_test_suite=False):
+                                debug=False, np_seed=None):
     """ 
     Master run method. Takes a graph, number of runs,
     number of steps per run, and starting beta mean and std. 
@@ -32,13 +31,15 @@ def run_coordination_simulation(graph, num_runs=1, num_steps=4,
     beta_std: std deviation of normal distribution from which 
                initial preferences (beta) drawn.
     debug:  If true, will output graphs of network state at each 
-            step of simulation. If `num_runs` more than one, 
-            will overright each run, leaving only most recent run.
+            step of simulation and will run test suite. If 
+            `num_runs` more than one, will overwrite each run, 
+            leaving only most recent run.
     np_seed: passed to numpy.random.seed() before beta's drawn. 
-    running_test_suite: for internal purposes -- I want tests run
-            at function call, but since tests call this 
-            function, gets into recursion loop if I don't
-            have a flag. 
+    
+
+    Returns coordination scores between 0 & 1, where 1 means
+    everyone coordinated on same candidate, 0 means community split
+    50 / 50.
 
     """
 
@@ -46,9 +47,7 @@ def run_coordination_simulation(graph, num_runs=1, num_steps=4,
     if not isinstance(graph, ig.Graph):
         raise TypeError("first argument must by iGraph object!")
 
-
-
-    if not running_test_suite:
+    if debug:
         print('running test suit')
         test_suite()
 
@@ -59,11 +58,14 @@ def run_coordination_simulation(graph, num_runs=1, num_steps=4,
     results = pd.Series(index=range(num_runs))
 
     for run in range(num_runs):
-        if not running_test_suite:
+        if debug:
             print('starting run {}'.format(run))
 
         results[run] = single_simulation_run(graph, num_steps, beta_mean, 
                                              beta_std, debug, np_seed)
+    
+    assert (results >= 0).all()
+    assert (results <= 1 ).all()
 
     return results
 
@@ -74,7 +76,12 @@ def single_simulation_run(graph, num_steps, beta_mean, beta_std, debug, np_seed)
     for step in range(num_steps):
         model.iterate(step)
 
-    return model.status.binary_pref.mean()
+    share_for_1 = model.status.binary_pref.mean()
+
+    # Correct so scaled 0 to 1
+    coordination = abs(share_for_1 - 0.5) * 2
+
+    return coordination
 
 class Simulation_State(object):
     """ 
@@ -175,24 +182,21 @@ def test_suite():
     g = ig.Graph.Erdos_Renyi(n=20, p=0.1)
 
     results = run_coordination_simulation(g, num_runs = 10, num_steps=5, 
-                                          beta_mean=1000, beta_std=0.1,
-                                          running_test_suite=True) 
+                                          beta_mean=1000, beta_std=0.1) 
     assert len(results) == 10
     assert (results == 1).all()  
 
     results = run_coordination_simulation(g, num_runs = 10, num_steps=5, 
-                                          beta_mean=-1000, beta_std=0.1,
-                                          running_test_suite=True) 
+                                          beta_mean=-1000, beta_std=0.1) 
     assert len(results) == 10
-    assert (results == 0).all()  
+    assert (results == 1).all()  
 
 
     # Make sure deterministic aside from betas. 
     g = ig.Graph.Erdos_Renyi(n=30, p=0.1)
     results = run_coordination_simulation(g, num_runs = 10, num_steps=5, 
                                           beta_mean=0.5, beta_std=0.1,
-                                          np_seed=5,
-                                          running_test_suite=True) 
+                                          np_seed=5) 
     assert (results == results[0]).all()
 
     # Graph with two people should never converge if betas in 0-0.5 and 0.5-1. 
@@ -208,9 +212,8 @@ def test_suite():
     
     results = run_coordination_simulation(g, num_runs = 10, num_steps=5, 
                                           beta_mean=0.5, beta_std=0.2,
-                                          np_seed=1,
-                                          running_test_suite=True) 
-    assert (results == 0.5).all()
+                                          np_seed=1) 
+    assert (results == 0).all()
 
 
 

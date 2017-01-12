@@ -9,7 +9,7 @@ import os
 import random
 import warnings
 import sys
-
+from numba import jit
 try:
     assert sys.version_info >= (3,4)
 except: 
@@ -49,14 +49,16 @@ def run_coordination_simulation(graph, num_runs=1, convergence=False,
             step of simulation and will run test suite. If 
             `num_runs` more than one, will overwrite each run, 
             leaving only most recent run.
-    np_seed: passed to numpy.random.seed() before beta's drawn.
-            Note the SAME SEED is used on every run -- this is mostly 
-            for testing. 
+    np_seed: passed to numpy.random.seed().
     
 
-    Returns coordination scores between 0 & 1, where 1 means
-    everyone coordinated on same candidate, 0 means community split
-    50 / 50.
+    Returns DataFrame containing, for each run:
+    	- `coordination` score: (1 = all same state, 0 = 50-50 in converged state.)
+    	- `converged`: did it successfully converge? np.nan if convergence False 
+    	               since not actually known if in converged state.
+    	- `steps`: number of UNCONVERGED steps. Does NOT include steps during which
+    			   network holds in converged state to satisfy 
+    			   for `convergence_period` criterion. 
 
     """
 
@@ -79,11 +81,14 @@ def run_coordination_simulation(graph, num_runs=1, convergence=False,
             raise ValueError("If convergence is True, must specify all convergence arguments")
 
 
+    # Set seed.
+    npr.seed(np_seed)
+
     # Start actual run. Create results storage vehicle and start 
     # running simulations!
 
     results = pd.DataFrame(columns=['coordination', 'converged', 'steps'],
-                           index=range(num_runs))
+                           index=range(num_runs), dtype=['float64', 'bool', 'int64'])
 
     for run in range(num_runs):
         if debug:
@@ -96,13 +101,23 @@ def run_coordination_simulation(graph, num_runs=1, convergence=False,
                                              convergence_max_steps=convergence_max_steps, 
                                              beta_mean=beta_mean, 
                                              beta_std=beta_std, 
-                                             debug=debug, 
-                                             np_seed=np_seed)
+                                             debug=debug)
     
         results.loc[run, 'coordination'] = output[0]
         results.loc[run, 'converged'] = output[1]
         results.loc[run, 'steps'] = output[2]
 
+
+    # If run for finite number of steps, don't know if
+    # converged. 
+    if not convergence:
+    	results.converged = np.nan
+
+
+    # Want steps PRE convergence, so subtract number
+    # of steps we require simulation to hold at 
+    # converged state. 
+    results.steps = results.steps - convergence_period
 
     assert (results.coordination >= 0).all()
     assert (results.coordination <= 1 ).all()
@@ -115,15 +130,16 @@ def single_simulation_run(graph, convergence, num_steps,
                           convergence_period,
                           convergence_max_steps, 
                           beta_mean, beta_std, 
-                          debug, np_seed):
+                          debug):
 
-    model = Simulation_State(graph, beta_mean, beta_std, debug, np_seed)
+    model = Simulation_State(graph, beta_mean, beta_std, debug)
 
 
     # The model can run in two states -- 
     # Fixed number of steps or convergence. 
     if convergence is not True:
         for step in range(num_steps):
+
             model.iterate(step)
 
         converged = False
@@ -131,7 +147,7 @@ def single_simulation_run(graph, convergence, num_steps,
         # want number of steps in normal numbers, not 0-counting. 
         step +=1 
 
-    if convergence is True:
+    else:
 
         continue_running = True
         step = 0
@@ -139,21 +155,25 @@ def single_simulation_run(graph, convergence, num_steps,
         converged = False
 
         while continue_running:
-            prior_state = model.status['binary_pref'].copy()
+            prior_state = model.binary_pref.copy()
 
             model.iterate(step)
 
-            post_state = model.status['binary_pref'].copy()
+            post_state = model.binary_pref.copy()
 
             changes = np.mean(post_state != prior_state)
             assert ((changes >=0) & (changes <=1)).all()
 
             step +=1
 
-            # Check state!
+            # Check state! If convergence level, count towards convergence period. 
             if changes < convergence_threshold:
                 periods_under_threshold +=1
             
+            # If did move too much, reset periods_under_threshold counter. 
+            if changes <= convergence_threshold:
+            	periods_under_threshold = 0
+
             if periods_under_threshold >= convergence_period:
                 continue_running = False
                 converged = True
@@ -163,7 +183,7 @@ def single_simulation_run(graph, convergence, num_steps,
 
 
     # Now calculate share coordinated in final state. 
-    share_for_1 = model.status.binary_pref.mean()
+    share_for_1 = model.binary_pref.mean()
 
     # Correct so scaled 0 to 1
     coordination = abs(share_for_1 - 0.5) * 2
@@ -175,7 +195,7 @@ class Simulation_State(object):
     General simulation object
     """
 
-    def __init__(self, graph, beta_mean, beta_std, debug, np_seed):
+    def __init__(self, graph, beta_mean, beta_std, debug):
  
         # Copy to protect integrity of original. 
         self.graph = graph.copy()
@@ -185,64 +205,54 @@ class Simulation_State(object):
 
         self.debug = debug
 
-        # DataFrame to carry all status information. 
-        # Row indices will be vertices.
-        self.status = pd.DataFrame(columns=['beta','local_avg', 'binary_pref'],
-                                   index=range(self.vcount) )
+        # Seed status Series.  
+        self.beta = pd.Series(npr.normal(loc = beta_mean, scale=beta_std, size=graph.vcount()), 
+                              index=range(self.vcount))
 
-        # Seed betas 
-        npr.seed(np_seed)
-        self.status['beta'] = npr.normal(loc = beta_mean, scale=beta_std, size=graph.vcount())
-        self.status['binary_pref'] = (self.status.beta > 0.5)
+        self.binary_pref = (self.beta > 0.5)
+        self.local_avg = pd.Series(index=range(self.vcount))
 
         if self.debug:
             self.plot_graph(initial=True)
-  
+
     def iterate(self, step):
         """ 
-        Updates model by iterating one step
+        Updates model by iterating one step.
+        Note this has to be done in a random, sequential manner.
+
+        Otherwise, I get "flashing" problems (consider a graph of two nodes with 
+        opposite states -- for many values, each will move to other person's state
+        each iteration, leading to flipping.)
         """
-        self.update_local_avg()
-        self.status['binary_pref'] = ((self.status.beta + self.status.local_avg)/2) > 0.5
+
+        for v in npr.permutation(self.vcount):
+            self.update_local_avg(v)
+            self.binary_pref.iloc[v] = ((self.beta.iloc[v] + self.local_avg.iloc[v])/2) > 0.5
+
+        assert pd.notnull(self.local_avg).all()
 
         if self.debug:
             self.plot_graph(step)
 
-    def update_local_avg(self):
+    def update_local_avg(self, v):
 
-        new_local_avg = pd.Series(index=range(self.vcount), dtype='float')
+        neighbor_indices = [n.index for n in self.graph.vs[v].neighbors()]
 
-        # I'm gonna use location indices not names (faster) so want to make sure works. 
-        # iGraph uses sequential vertex numbers as ids, so should match. 
-        assert (self.status.index == range(self.vcount)).all()
+        # Sends warning if empty slice, but ok. 
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            a = self.binary_pref.iloc[neighbor_indices].mean()
+    
+        self.local_avg.iloc[v] = a if pd.notnull(a) else 0.5
 
-        # For each vertex, look up neighbors. 
-        for v in self.graph.vs:
-            neighbor_indices = list()
-            for n in v.neighbors():
-                neighbor_indices.append(n.index)
-
-            # Sends warning if empty slice, but ok. 
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                new_local_avg.iloc[v.index] = self.status.binary_pref.iloc[neighbor_indices].mean()
-
-        self.status.local_avg = new_local_avg
-
-        # People with no neighbors get 0.5
-        self.status.local_avg = self.status.local_avg.fillna(0.5)
-        # Check values!
-
-        assert (self.status.local_avg >= 0).all() 
-        assert (self.status.local_avg <= 1).all() 
 
     def plot_graph(self, step='', initial=False):
             color_dict = {0:'blue', 1:'red'}
 
             for v in self.graph.vs:
-                new_pref = self.status.binary_pref.loc[v.index]
+                new_pref = self.binary_pref.loc[v.index]
                 v['color'] = color_dict[new_pref]
-                v['label'] = 'beta {:.2f},\n local {:.2f}'.format(self.status.beta.loc[v.index], self.status.local_avg.loc[v.index])
+                v['label'] = 'beta {:.2f},\n local {:.2f}'.format(self.beta.loc[v.index], self.local_avg.loc[v.index])
         
             debug_folder = '/users/nick/dropbox/GAPP/02_Main Evaluation/Activities' \
                          '/18_voting_and_networks/2_code/coordination_model_folder' \
@@ -256,7 +266,8 @@ class Simulation_State(object):
                         os.remove(f)
 
             random.seed('plotseed')
-            ig.plot(self.graph, target='plot_{}.png'.format(step), vertex_label_dist=2, margin=70)
+            ig.plot(self.graph, target='plot_{}.png'.format(step), vertex_label_dist=2, 
+                    vertex_size=20, vertex_label_size=20, margin=70, bbox=(2000,2000))
 
             # Don't want affecting anything outside of here, so reset all
             random.seed(None)
@@ -281,91 +292,78 @@ def test_suite():
     assert (results.coordination == 1).all()  
 
 
-    # Make sure deterministic aside from betas. 
+    # Make sure seed works. 
     g = ig.Graph.Erdos_Renyi(n=30, p=0.1)
-    results = run_coordination_simulation(g, num_runs = 10, num_steps=5, 
+    run1 = run_coordination_simulation(g, num_runs = 10, num_steps=5, 
+                                          beta_mean=0.5, beta_std=0.1,
+                                          np_seed=5)
+
+    run2 = run_coordination_simulation(g, num_runs = 10, num_steps=5, 
                                           beta_mean=0.5, beta_std=0.1,
                                           np_seed=5) 
-    assert (results.coordination == results.coordination[0]).all()
+    assert (run1.coordination == run2.coordination).all()
 
-    # Graph with two people should never converge if betas in 0-0.5 and 0.5-1. 
-    
-    g = ig.Graph([(0,1)])
-    
-    # Make sure seed generates proper betas. Could vary by operating system? 
-    # (I'm on mac)
-    npr.seed(1)
-    test = npr.normal(0.5, 0.2, 2)
-    assert test[0] > 0 and test[0] < 1
-    assert test[1] > 0 and test[1] < 1
-    
-    results = run_coordination_simulation(g, num_runs = 10, num_steps=5, 
-                                          beta_mean=0.5, beta_std=0.2,
-                                          np_seed=1) 
-    assert (results.coordination == 0).all()
-
-
-    # Now run with convergence threshold. Should never 
-    # arrive and should hit it's max iterations. 
-    results = run_coordination_simulation(g, num_runs = 10, convergence=True,
-                                          convergence_threshold=0.2, 
-                                          convergence_period=3,
-                                          convergence_max_steps=10,
-                                          beta_mean=0.5, beta_std=0.2,
-                                          np_seed=1) 
-
-    assert (results.converged == False).all()
-    assert (results.steps == 10).all()
 
     # Change threshold to 1, and should converge nicely (albeit trivially).   
     results = run_coordination_simulation(g, num_runs = 10, convergence=True,
                                           convergence_threshold=1.1, 
                                           convergence_period=3,
                                           convergence_max_steps=10,
-                                          beta_mean=0.5, beta_std=0.2,
-                                          np_seed=1) 
+                                          beta_mean=0.5, beta_std=0.2) 
 
     assert (results.converged == True).all()
     assert (results.steps == 3).all()
 
 
-
-    # Run for immediate convergence
+    # Change threshold to 0, and should hit threshold
     results = run_coordination_simulation(g, num_runs = 10, convergence=True,
-                                          convergence_threshold=0.2, 
+                                          convergence_threshold=0, 
                                           convergence_period=3,
                                           convergence_max_steps=10,
-                                          beta_mean=100, beta_std=0.1,
-                                          np_seed=2) 
-    assert (results.converged == True).all()
-    assert (results.steps == 3).all()
-
-    # Check threshold values. 
-    # Now has two vertices which will flip each time, and 8 that
-    # are disconnected and thus static. 
-    # So should converge at threshold of 0.21 (since 2 flipping = 0.2)
-    # but not at 0.1
-    g.add_vertices(range(2,10))
-    results = run_coordination_simulation(g, num_runs = 10, convergence=True,
-                                          convergence_threshold=0.21, 
-                                          convergence_period=3,
-                                          convergence_max_steps=10,
-                                          beta_mean=0.5, beta_std=0.2,
-                                          np_seed=1) 
-
-    assert (results.converged == True).all()
-    assert (results.steps == 3).all()
-
-
-    results = run_coordination_simulation(g, num_runs = 10, convergence=True,
-                                          convergence_threshold=0.1, 
-                                          convergence_period=3,
-                                          convergence_max_steps=10,
-                                          beta_mean=0.5, beta_std=0.2,
-                                          np_seed=1) 
+                                          beta_mean=0.5, beta_std=0.2) 
 
     assert (results.converged == False).all()
     assert (results.steps == 10).all()
+
+
+
+    # Set some
+    g2 = ig.Graph()
+    # Four nodes, first three connected, fourth alone.. 
+    g2.add_vertices([0,1,2,3])
+    g2.add_edges([(0,1), (1,2), (0,2)])
+    npr.seed(44)
+    test = npr.normal(loc = 0.5, scale=0.1, size=4)
+    # Make sure seed works. May vary with operating system. I'm on a mac
+    assert (abs(test - np.array([ 0.42493853,  0.63163573,  0.624614  ,  0.33950843])) < 0.01).all()
+
+    # Threshold to exclude first step. 
+    results = run_coordination_simulation(g2, num_runs = 1, convergence=True,
+                                          convergence_threshold=0.01, 
+                                          convergence_period=3,
+                                          convergence_max_steps=10,
+                                          beta_mean=0.5, beta_std=0.1,
+                                          np_seed=44) 
+    assert (results.coordination == 0.5).all()
+    assert (results.converged == True).all()
+    # In first step, moves from 0, 1, 1, 0 to 1,1,1,0. Then three periods stable. 
+    assert (results.steps == 4).all()
+
+    # Higher threshold counts first adjustment as within convergence threshold.
+    results = run_coordination_simulation(g2, num_runs = 1, convergence=True,
+                                          convergence_threshold=0.3, 
+                                          convergence_period=3,
+                                          convergence_max_steps=10,
+                                          beta_mean=0.5, beta_std=0.1,
+                                          np_seed=44) 
+    assert (results.coordination == 0.5).all()
+    assert (results.converged == True).all()
+    # In first step, moves from 0, 1, 1, 0 to 1,1,1,0. STill 3/4 stable, so counts towards
+    # convergence. Only three steps now. 
+    assert (results.steps == 3).all()
+
+
+
 
 
 

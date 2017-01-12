@@ -88,7 +88,8 @@ def run_coordination_simulation(graph, num_runs=1, convergence=False,
     # running simulations!
 
     results = pd.DataFrame(columns=['coordination', 'converged', 'steps'],
-                           index=range(num_runs), dtype=['float64', 'bool', 'int64'])
+                           index=range(num_runs))
+
 
     for run in range(num_runs):
         if debug:
@@ -108,16 +109,22 @@ def run_coordination_simulation(graph, num_runs=1, convergence=False,
         results.loc[run, 'steps'] = output[2]
 
 
+    # type tweak -- still problems with DataFrame constructor -- can't set different columns to different types.different
+    results.coordination = results.coordination.astype('float')
+    results.converged = results.converged.astype('bool')
+    results.steps = results.steps.astype('float')
+
+
     # If run for finite number of steps, don't know if
     # converged. 
     if not convergence:
     	results.converged = np.nan
 
-
     # Want steps PRE convergence, so subtract number
     # of steps we require simulation to hold at 
     # converged state. 
-    results.steps = results.steps - convergence_period
+    results.loc[results.converged==True, 'steps'] = results.loc[results.converged==True, 'steps'] - convergence_period
+
 
     assert (results.coordination >= 0).all()
     assert (results.coordination <= 1 ).all()
@@ -171,7 +178,7 @@ def single_simulation_run(graph, convergence, num_steps,
                 periods_under_threshold +=1
             
             # If did move too much, reset periods_under_threshold counter. 
-            if changes <= convergence_threshold:
+            if changes >= convergence_threshold:
             	periods_under_threshold = 0
 
             if periods_under_threshold >= convergence_period:
@@ -283,7 +290,7 @@ def test_suite():
                                           beta_mean=1000, beta_std=0.1) 
     assert len(results.coordination) == 10
     assert (results.coordination == 1).all()  
-    assert (results.converged == False).all()  
+    assert (pd.isnull(results.converged)).all()  
     assert (results.steps == 5).all()  
 
     results = run_coordination_simulation(g, num_runs = 10, num_steps=5, 
@@ -310,9 +317,8 @@ def test_suite():
                                           convergence_period=3,
                                           convergence_max_steps=10,
                                           beta_mean=0.5, beta_std=0.2) 
-
     assert (results.converged == True).all()
-    assert (results.steps == 3).all()
+    assert (results.steps == 0).all()
 
 
     # Change threshold to 0, and should hit threshold
@@ -347,7 +353,7 @@ def test_suite():
     assert (results.coordination == 0.5).all()
     assert (results.converged == True).all()
     # In first step, moves from 0, 1, 1, 0 to 1,1,1,0. Then three periods stable. 
-    assert (results.steps == 4).all()
+    assert (results.steps == 1).all()
 
     # Higher threshold counts first adjustment as within convergence threshold.
     results = run_coordination_simulation(g2, num_runs = 1, convergence=True,
@@ -360,7 +366,7 @@ def test_suite():
     assert (results.converged == True).all()
     # In first step, moves from 0, 1, 1, 0 to 1,1,1,0. STill 3/4 stable, so counts towards
     # convergence. Only three steps now. 
-    assert (results.steps == 3).all()
+    assert (results.steps == 0).all()
 
 
 

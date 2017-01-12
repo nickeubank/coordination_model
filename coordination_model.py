@@ -245,9 +245,9 @@ class Simulation_State(object):
 
         neighbor_indices = [n.index for n in self.graph.vs[v].neighbors()]
 
-        # Sends warning if empty slice, but ok. 
         with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
+            warnings.filterwarnings("ignore", ".*Mean of empty slice.*")
+            warnings.filterwarnings("ignore", ".*invalid value encountered in double_scalars.*")
             a = self.binary_pref.iloc[neighbor_indices].mean()
     
         self.local_avg.iloc[v] = a if pd.notnull(a) else 0.5

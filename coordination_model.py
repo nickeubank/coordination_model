@@ -20,7 +20,7 @@ def run_coordination_simulation(graph, num_runs=1, convergence=False,
                                 num_steps=None, convergence_threshold=None,
                                 convergence_period=None,
                                 convergence_max_steps=None,
-                                beta_mean=0.5, beta_std=0.1,
+                                beta_mean=0, beta_std=1,
                                 debug=False, np_seed=None):
     """ 
     Master run method. Takes a graph, number of runs,
@@ -162,11 +162,11 @@ def single_simulation_run(graph, convergence, num_steps,
         converged = False
 
         while continue_running:
-            prior_state = model.binary_pref.copy()
+            prior_state = model.participating.copy()
 
             model.iterate(step)
 
-            post_state = model.binary_pref.copy()
+            post_state = model.participating.copy()
 
             changes = np.mean(post_state != prior_state)
             assert ((changes >=0) & (changes <=1)).all()
@@ -189,11 +189,8 @@ def single_simulation_run(graph, convergence, num_steps,
                 continue_running = False
 
 
-    # Now calculate share coordinated in final state. 
-    share_for_1 = model.binary_pref.mean()
-
     # Correct so scaled 0 to 1
-    coordination = abs(share_for_1 - 0.5) * 2
+    coordination = model.participating.mean()
 
     return coordination, converged, step
 
@@ -216,7 +213,7 @@ class Simulation_State(object):
         self.beta = pd.Series(npr.normal(loc = beta_mean, scale=beta_std, size=graph.vcount()), 
                               index=range(self.vcount))
 
-        self.binary_pref = (self.beta > 0.5)
+        self.participating = (self.beta > 1)
         self.local_avg = pd.Series(index=range(self.vcount))
 
         if self.debug:
@@ -234,7 +231,7 @@ class Simulation_State(object):
 
         for v in npr.permutation(self.vcount):
             self.update_local_avg(v)
-            self.binary_pref.iloc[v] = ((self.beta.iloc[v] + self.local_avg.iloc[v])/2) > 0.5
+            self.participating.iloc[v] = (self.beta.iloc[v] - (1 - self.local_avg.iloc[v]) ) > 0
 
         assert pd.notnull(self.local_avg).all()
 
@@ -248,21 +245,26 @@ class Simulation_State(object):
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", ".*Mean of empty slice.*")
             warnings.filterwarnings("ignore", ".*invalid value encountered in double_scalars.*")
-            a = self.binary_pref.iloc[neighbor_indices].mean()
+            a = self.participating.iloc[neighbor_indices].mean()
     
-        self.local_avg.iloc[v] = a if pd.notnull(a) else 0.5
+        # Some people have no neighbors. In that case, want to keep in initial state, which 
+        # (by Siegel assumption following Granovetter is no local participation). So only 
+        # protest if \beta > 1. 
+        # Accomplished by setting local_avg to 0. 
+
+        self.local_avg.iloc[v] = a if pd.notnull(a) else 0
 
 
     def plot_graph(self, step='', initial=False):
             color_dict = {0:'blue', 1:'red'}
 
             for v in self.graph.vs:
-                new_pref = self.binary_pref.loc[v.index]
+                new_pref = self.participating.loc[v.index]
                 v['color'] = color_dict[new_pref]
                 v['label'] = 'beta {:.2f},\n local {:.2f}'.format(self.beta.loc[v.index], self.local_avg.loc[v.index])
         
             debug_folder = '/users/nick/dropbox/GAPP/02_Main Evaluation/Activities' \
-                         '/18_voting_and_networks/2_code/coordination_model_folder' \
+                         '/18_voting_and_networks/2_code/libraries/coordination_model_folder' \
                          '/debug_plots'
 
             os.chdir(debug_folder)
@@ -296,7 +298,7 @@ def test_suite():
     results = run_coordination_simulation(g, num_runs = 10, num_steps=5, 
                                           beta_mean=-1000, beta_std=0.1) 
     assert len(results.coordination) == 10
-    assert (results.coordination == 1).all()  
+    assert (results.coordination == 0).all()  
 
 
     # Make sure seed works. 
@@ -309,7 +311,7 @@ def test_suite():
                                           beta_mean=0.5, beta_std=0.1,
                                           np_seed=5) 
     assert (run1.coordination == run2.coordination).all()
-
+    assert len(run1) == 10
 
     # Change threshold to 1, and should converge nicely (albeit trivially).   
     results = run_coordination_simulation(g, num_runs = 10, convergence=True,
@@ -339,38 +341,128 @@ def test_suite():
     g2.add_vertices([0,1,2,3])
     g2.add_edges([(0,1), (1,2), (0,2)])
     npr.seed(44)
+    
+    # Gonna run with seed 44, so make sure I know what initial betas will be created. 
     test = npr.normal(loc = 0.5, scale=0.1, size=4)
-    # Make sure seed works. May vary with operating system. I'm on a mac
     assert (abs(test - np.array([ 0.42493853,  0.63163573,  0.624614  ,  0.33950843])) < 0.01).all()
 
-    # Threshold to exclude first step. 
+    # Gonna run with seed 44, so make sure I know what initial betas will be created. 
+    # Here, one of first three will start (beta = 1.27) and loner (0.92) will never
+    # engage. 
+    npr.seed(44)
+    test2 = npr.normal(loc = 0.75, scale=0.2, size=4)
+    assert (abs(test2 - np.array([ 0.59987706,  1.01327146,  0.99922801,  0.42901685])) < 0.01).all()
+    
+    # This never gets anywhere. 
     results = run_coordination_simulation(g2, num_runs = 1, convergence=True,
-                                          convergence_threshold=0.01, 
-                                          convergence_period=3,
-                                          convergence_max_steps=10,
-                                          beta_mean=0.5, beta_std=0.1,
-                                          np_seed=44) 
-    assert (results.coordination == 0.5).all()
+                                         convergence_threshold=0.01, 
+                                         convergence_period=3,
+                                         convergence_max_steps=10,
+                                         beta_mean=0.5, beta_std=0.1,
+                                         np_seed=44) 
+    assert (results.coordination == 0).all()
     assert (results.converged == True).all()
-    # In first step, moves from 0, 1, 1, 0 to 1,1,1,0. Then three periods stable. 
+    assert (results.steps == 0).all()
+    
+
+    results = run_coordination_simulation(g2, num_runs = 1, convergence=True,
+                                         convergence_threshold=0.01, 
+                                         convergence_period=3,
+                                         convergence_max_steps=10,
+                                         beta_mean=0.9, beta_std=0.2,
+                                         np_seed=44) 
+    assert (results.coordination == 0.75).all()
+    assert (results.converged == True).all()
     assert (results.steps == 1).all()
 
-    # Higher threshold counts first adjustment as within convergence threshold.
-    results = run_coordination_simulation(g2, num_runs = 1, convergence=True,
-                                          convergence_threshold=0.3, 
-                                          convergence_period=3,
-                                          convergence_max_steps=10,
-                                          beta_mean=0.5, beta_std=0.1,
-                                          np_seed=44) 
-    assert (results.coordination == 0.5).all()
+
+    # Now put in a line and look at how things move down the line. 
+    a = ig.Graph()
+    a.add_vertices(range(10))
+    a.add_edges([(i, i+1) for i in range(9)])
+        
+    # Gonna run with seed, so make sure I know what initial betas will be created. 
+    npr.seed(41)
+    test = npr.normal(loc = 0.75, scale=0.4, size=10)
+    assert (abs(test - np.array([ 0.64171507,  0.79193922,  0.85021113,  
+                                  0.37992001, 0.97685746,  0.33392791,
+                                  0.68852962,  1.06594072,  0.25951366,  
+                                  0.3707972 ])) < 0.01).all()
+    
+    # Should start with node 7. Will spread one to left, but not to right. 
+    results = run_coordination_simulation(a, num_runs = 1, convergence=True,
+                                     convergence_threshold=0.01, 
+                                     convergence_period=3,
+                                     convergence_max_steps=20,
+                                     beta_mean=0.75, beta_std=0.4,
+                                     np_seed=41, debug=True) 
+    assert (results.coordination == 0.2).all()
     assert (results.converged == True).all()
-    # In first step, moves from 0, 1, 1, 0 to 1,1,1,0. STill 3/4 stable, so counts towards
-    # convergence. Only three steps now. 
-    assert (results.steps == 0).all()
+    assert (results.steps == 1).all()
 
 
+    # Longer run
+    npr.seed(41)
+    test = npr.normal(loc = 0.75, scale=0.5, size=10)
+    assert (abs(test - np.array([ 0.64171507,  0.79193922,  0.85021113,  
+                                  0.37992001, 0.97685746,  0.33392791,
+                                  0.68852962,  1.06594072,  0.25951366,  
+                                  0.3707972 ])) < 0.01).all()
+    
+    # Should start with node 7. Will spread one to left, but not to right. 
+    results = run_coordination_simulation(a, num_runs = 1, convergence=True,
+                                     convergence_threshold=0.01, 
+                                     convergence_period=3,
+                                     convergence_max_steps=20,
+                                     beta_mean=0.75, beta_std=0.4,
+                                     np_seed=41, debug=True) 
+    assert (results.coordination == 0.2).all()
+    assert (results.converged == True).all()
+    assert (results.steps == 1).all()
 
 
+    # Should start with nodes 1, 2, 4, and 7. 
+    # More complicated spread -- confirmed in plots
+    npr.seed(41)
+    test = npr.normal(loc = 1, scale=1, size=10)
+    assert (abs(test - np.array([ 0.72928768,  1.10484805,  
+                                  1.25052782,  0.07480003, 
+                                  1.56714366, -0.04018022,
+                                  0.84632405,  1.78985181,
+                                 -0.22621585,  0.05199301])) < 0.01).all()
+    
+    results = run_coordination_simulation(a, num_runs = 1, convergence=True,
+                                     convergence_threshold=0.01, 
+                                     convergence_period=3,
+                                     convergence_max_steps=20,
+                                     beta_mean=1, beta_std=1,
+                                     np_seed=41, debug=True) 
+
+
+    assert (results.coordination == 0.7).all()
+    assert (results.converged == True).all()
+    assert (results.steps == 1).all()
+
+    # Finally, lattice
+    a = ig.Graph.Lattice([3,3])
+    npr.seed(41)
+    test = npr.normal(loc = 1.3, scale=1, size=9)
+
+    assert (abs(test - np.array([ 1.02928768,  1.40484805,  1.55052782,  
+                                  0.37480003,  1.86714366,  0.25981978,
+                                  1.14632405,  2.08985181,  0.07378415])
+               ) < 0.01).all()
+
+    results = run_coordination_simulation(a, num_runs = 1, convergence=True,
+                                 convergence_threshold=0.01, 
+                                 convergence_period=3,
+                                 convergence_max_steps=20,
+                                 beta_mean=1.3, beta_std=1,
+                                 np_seed=41, debug=True) 
+
+    assert (results.coordination == 1).all()
+    assert (results.converged == True).all()
+    assert (results.steps == 3).all()
 
 
 

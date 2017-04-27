@@ -16,6 +16,9 @@ except:
     raise EnvironmentError("Not guaranteed to work with less than python 3.4")
 
 
+import pyximport; pyximport.install(setup_args={"include_dirs":np.get_include()})
+import coordination_helpers as helpers
+
 def run_coordination_simulation(graph, num_runs=1, convergence=False,
                                 num_steps=None, convergence_threshold=None,
                                 convergence_period=None,
@@ -214,7 +217,7 @@ class Simulation_State(object):
                               index=range(self.vcount))
 
         self.participating = (self.beta > 1)
-        self.local_avg = pd.Series(index=range(self.vcount))
+        self.local_avg = pd.Series(0.0, index=range(self.vcount))
 
         if self.debug:
             self.plot_graph(initial=True)
@@ -229,9 +232,7 @@ class Simulation_State(object):
         each iteration, leading to flipping.)
         """
 
-        for v in npr.permutation(self.vcount):
-            self.update_local_avg(v)
-            self.participating.iloc[v] = (self.beta.iloc[v] - (1 - self.local_avg.iloc[v]) ) > 0
+        cython_output = helpers.cython_iterate(self.participating.values, self.local_avg.values, self.beta.values, self.graph)
 
         assert pd.notnull(self.local_avg).all()
 
@@ -242,17 +243,15 @@ class Simulation_State(object):
 
         neighbor_indices = [n.index for n in self.graph.vs[v].neighbors()]
 
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", ".*Mean of empty slice.*")
-            warnings.filterwarnings("ignore", ".*invalid value encountered in double_scalars.*")
-            a = self.participating.iloc[neighbor_indices].mean()
-    
-        # Some people have no neighbors. In that case, want to keep in initial state, which 
-        # (by Siegel assumption following Granovetter is no local participation). So only 
-        # protest if \beta > 1. 
-        # Accomplished by setting local_avg to 0. 
+        if len(neighbor_indices) > 0:
+              self.local_avg.iloc[v] = self.participating.iloc[neighbor_indices].mean()
+      
+          # Some people have no neighbors. In that case, want to keep in initial state, which 
+          # (by Siegel assumption following Granovetter is no local participation). So only 
+          # protest if \beta > 1. 
+          # Accomplished by setting local_avg to 0. 
 
-        self.local_avg.iloc[v] = a if pd.notnull(a) else 0
+
 
 
     def plot_graph(self, step='', initial=False):
@@ -395,27 +394,7 @@ def test_suite():
                                      convergence_period=3,
                                      convergence_max_steps=20,
                                      beta_mean=0.75, beta_std=0.4,
-                                     np_seed=41, debug=True) 
-    assert (results.coordination == 0.2).all()
-    assert (results.converged == True).all()
-    assert (results.steps == 1).all()
-
-
-    # Longer run
-    npr.seed(41)
-    test = npr.normal(loc = 0.75, scale=0.5, size=10)
-    assert (abs(test - np.array([ 0.64171507,  0.79193922,  0.85021113,  
-                                  0.37992001, 0.97685746,  0.33392791,
-                                  0.68852962,  1.06594072,  0.25951366,  
-                                  0.3707972 ])) < 0.01).all()
-    
-    # Should start with node 7. Will spread one to left, but not to right. 
-    results = run_coordination_simulation(a, num_runs = 1, convergence=True,
-                                     convergence_threshold=0.01, 
-                                     convergence_period=3,
-                                     convergence_max_steps=20,
-                                     beta_mean=0.75, beta_std=0.4,
-                                     np_seed=41, debug=True) 
+                                     np_seed=41) 
     assert (results.coordination == 0.2).all()
     assert (results.converged == True).all()
     assert (results.steps == 1).all()
@@ -436,7 +415,7 @@ def test_suite():
                                      convergence_period=3,
                                      convergence_max_steps=20,
                                      beta_mean=1, beta_std=1,
-                                     np_seed=41, debug=True) 
+                                     np_seed=41) 
 
 
     assert (results.coordination == 0.7).all()
@@ -458,7 +437,7 @@ def test_suite():
                                  convergence_period=3,
                                  convergence_max_steps=20,
                                  beta_mean=1.3, beta_std=1,
-                                 np_seed=41, debug=True) 
+                                 np_seed=41) 
 
     assert (results.coordination == 1).all()
     assert (results.converged == True).all()
